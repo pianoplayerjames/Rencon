@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"strings"
 	"fmt"
 	"os"
 	"time"
@@ -144,6 +145,13 @@ func discoverPeers(ctx context.Context, node host.Host, dht *dht.IpfsDHT) {
 	}
 }
 
+func printConnectedPeers(node host.Host) {
+	fmt.Println("Connected peers:")
+	for _, conn := range node.Network().Conns() {
+		fmt.Printf("  - %s\n", conn.RemotePeer())
+	}
+}
+
 func main() {
 	config, err := loadConfig("config.json")
 	if err != nil {
@@ -179,6 +187,27 @@ func main() {
 	// Start peer discovery
 	go discoverPeers(ctx, node, dht)
 
-	// Hang forever.
-	<-make(chan struct{})
+	// Read user input from the terminal
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		fmt.Print("> ")
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			fmt.Println("Error reading input:", err)
+			continue
+		}
+		input = strings.TrimSpace(input)
+
+		if input == "online" {
+			printConnectedPeers(node)
+		} else if input == "exit" {
+			fmt.Println("Exiting...")
+			cancel() // Cancel the context to gracefully shutdown
+			return
+		} else {
+			fmt.Println("Unknown command. Available commands:")
+			fmt.Println("  online - Print a list of connected peers")
+			fmt.Println("  exit   - Exit the program")
+		}
+	}
 }
