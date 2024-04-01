@@ -314,7 +314,7 @@ func main() {
     }
 
     port := 8001
-    addr := fmt.Sprintf("%s:%d", ip, port)
+    addr := fmt.Sprintf("0.0.0.0:%d", port)
     for {
         listener, err := net.Listen("tcp", addr)
         if err == nil {
@@ -322,7 +322,7 @@ func main() {
             break
         }
         port++
-        addr = fmt.Sprintf("%s:%d", ip, port)
+        addr = fmt.Sprintf("0.0.0.0:%d", port)
     }
 
     server := NewServer(addr)
