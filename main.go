@@ -331,6 +331,7 @@ func main() {
     // Connect to bootstrap nodes
     for _, addr := range config.BootstrapServers {
         if addr == server.node.Addr {
+            fmt.Printf("Skipping connecting to self: %s\n", addr)
             continue
         }
 
