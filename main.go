@@ -306,12 +306,7 @@ func main() {
         return
     }
 
-    // Get the IP address of the machine
-    ip, err := getIPAddress()
-    if err != nil {
-        fmt.Println("Error getting IP address:", err)
-        return
-    }
+
 
     port := 8001
     addr := fmt.Sprintf("0.0.0.0:%d", port)
