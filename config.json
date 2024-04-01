@@ -1,8 +1,8 @@
 {
     "bootstrapPeers": [
-      "/ip4/137.184.177.38/tcp/8001/p2p/QmPxkU4T2fJeB92FZUCL2eBsUGq3nHMhXJ3Kh7X7eetzY5",
-      "/ip4/164.92.114.85/tcp/8001/p2p/QmXLqwDW8N1QpbiDsRjFGmutYjM7Hywo3HMo8vkN3aaF9P",
-      "/ip4/143.198.96.49/tcp/8001/p2p/QmZw19Doe5wgJNekFefjRDy9nHjhgtQNZaY3Q2Aayhefq3"
+      "/ip4/137.184.177.38/tcp/8001/p2p/QmUVAENmjkH6LY4qnVes6pQwhVgnyssRC4wLuqzrhKAnaV",
+      "/ip4/164.92.114.85/tcp/8001/p2p/QmUKrk1qkbcZYF65BU9YGpqeFZWNcq24j8VoiU2yGvo3Y1",
+      "/ip4/143.198.96.49/tcp/8001/p2p/QmQjukATGrxaGte9gx7btUhawvjRLbuUtHWnZtKeqVLtc5"
     ],
     "listenAddress": "/ip4/0.0.0.0/tcp/8001",
     "protocolID": "/chat/1.0.0"
