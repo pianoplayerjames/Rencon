@@ -1,7 +1,7 @@
 {
     "bootstrapPeers": [
-      "/ip4/137.184.177.38/tcp/8001/p2p/12D3KooWKKUy5KVMANwD3vbu6gL5SQg8NCEr8PndoBwA8twqwYN8"
+      "/ip4/137.184.177.38/tcp/8001/p2p/QmPxkU4T2fJeB92FZUCL2eBsUGq3nHMhXJ3Kh7X7eetzY5"
     ],
-    "listenAddress": "/ip4/0.0.0.0/tcp/0",
+    "listenAddress": "/ip4/0.0.0.0/tcp/8001",
     "protocolID": "/chat/1.0.0"
   }
