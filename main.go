@@ -1,32 +1,35 @@
 package main
 
 import (
-    "bufio"
-    "context"
-    "encoding/json"
-    "fmt"
-    "os"
-    "strings"
-    "time"
+	"bufio"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io/ioutil"
+	"os"
+	"strings"
+	"time"
 
-    "github.com/libp2p/go-libp2p"
-    "github.com/libp2p/go-libp2p-kad-dht"
-    "github.com/libp2p/go-libp2p/core/host"
-    "github.com/libp2p/go-libp2p/core/network"
-    "github.com/libp2p/go-libp2p/core/peer"
-    "github.com/libp2p/go-libp2p/core/protocol"
-    "github.com/multiformats/go-multiaddr"
+	"github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p-kad-dht"
+	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
+	"github.com/multiformats/go-multiaddr"
 )
 
 type Config struct {
-    BootstrapPeers []string `json:"bootstrapPeers"`
-    ListenAddress  string   `json:"listenAddress"`
-    ProtocolID     string   `json:"protocolID"`
+	BootstrapPeers []string `json:"bootstrapPeers"`
+	ListenAddress  string   `json:"listenAddress"`
+	ProtocolID     string   `json:"protocolID"`
 }
 
 const (
-    peerListRequestMessage  = "peer_list_request"
-    peerListResponseMessage = "peer_list_response"
+	peerListRequestMessage  = "peer_list_request"
+	peerListResponseMessage = "peer_list_response"
+	keyFilePath             = "bootstrap_key.pem"
 )
 
 func loadConfig(filePath string) (*Config, error) {
@@ -60,7 +63,6 @@ func handleStream(s network.Stream) {
         return
     }
 
-    // stream 's' will stay open until you close it (or the other side closes it).
 }
 
 func readData(rw *bufio.ReadWriter) {
@@ -155,48 +157,93 @@ func receivePeerList(s network.Stream) ([]peer.ID, error) {
     return nil, fmt.Errorf("unexpected message received: %s", message)
 }
 
+// generatePersistentKeyPair generates a new key pair and saves it to a file.
+func generatePersistentKeyPair(filepath string) error {
+	privKey, _, err := crypto.GenerateKeyPair(crypto.RSA, 2048)
+	if err != nil {
+		return err
+	}
+
+	privKeyBytes, err := crypto.MarshalPrivateKey(privKey)
+	if err != nil {
+		return err
+	}
+
+	err = ioutil.WriteFile(filepath, privKeyBytes, 0600)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// loadPersistentKeyPair loads a previously generated key pair from a file.
+func loadPersistentKeyPair(filepath string) (crypto.PrivKey, error) {
+	privKeyBytes, err := ioutil.ReadFile(filepath)
+	if err != nil {
+		return nil, err
+	}
+
+	privKey, err := crypto.UnmarshalPrivateKey(privKeyBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	return privKey, nil
+}
+
 func startNode(ctx context.Context, config *Config) (host.Host, *dht.IpfsDHT, error) {
-    fmt.Println("Starting node...")
+	fmt.Println("Starting node...")
 
-    // Create a new libp2p host with the given listen address
-    listenAddr, err := multiaddr.NewMultiaddr(config.ListenAddress)
-    if err != nil {
-        return nil, nil, err
-    }
-    host, err := libp2p.New(libp2p.ListenAddrs(listenAddr))
-    if err != nil {
-        return nil, nil, err
-    }
+	// Load the persistent key pair
+	privKey, err := loadPersistentKeyPair(keyFilePath)
+	if err != nil {
+		// If the key pair doesn't exist, generate a new one and save it
+		err := generatePersistentKeyPair(keyFilePath)
+		if err != nil {
+			return nil, nil, err
+		}
+		privKey, err = loadPersistentKeyPair(keyFilePath)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
 
-    // Create a new DHT
-    dht, err := dht.New(ctx, host)
-    if err != nil {
-        return nil, nil, err
-    }
+	// Create a new libp2p host with the loaded key pair
+	host, err := libp2p.New(libp2p.Identity(privKey), libp2p.ListenAddrStrings(config.ListenAddress))
+	if err != nil {
+		return nil, nil, err
+	}
 
-    // Set the stream handler on the host
-    host.SetStreamHandler(protocol.ID(config.ProtocolID), handleStream)
+	// Create a new DHT
+	dht, err := dht.New(ctx, host)
+	if err != nil {
+		return nil, nil, err
+	}
 
-    fmt.Println("Node started with ID:", host.ID())
+	// Set the stream handler on the host
+	host.SetStreamHandler(protocol.ID(config.ProtocolID), handleStream)
 
-    // Set up periodic peer list updates
-    go func() {
-        ticker := time.NewTicker(5 * time.Minute)
-        defer ticker.Stop()
+	fmt.Println("Node started with ID:", host.ID())
 
-        for {
-            select {
-            case <-ticker.C:
-                if err := updatePeerList(ctx, host, config); err != nil {
-                    fmt.Println("Error updating peer list:", err)
-                }
-            case <-ctx.Done():
-                return
-            }
-        }
-    }()
+	// Set up periodic peer list updates
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
 
-    return host, dht, nil
+		for {
+			select {
+			case <-ticker.C:
+				if err := updatePeerList(ctx, host, config); err != nil {
+					fmt.Println("Error updating peer list:", err)
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return host, dht, nil
 }
 
 func connectToVPS(ctx context.Context, node host.Host, vpsAddr string) error {
@@ -310,62 +357,62 @@ func printConnectedPeers(node host.Host) {
 }
 
 func main() {
-    config, err := loadConfig("config.json")
-    if err != nil {
-        fmt.Println("Failed to load configuration:", err)
-        return
-    }
+	config, err := loadConfig("config.json")
+	if err != nil {
+		fmt.Println("Failed to load configuration:", err)
+		return
+	}
 
-    ctx, cancel := context.WithCancel(context.Background())
-    defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-    node, dht, err := startNode(ctx, config)
-    if err != nil {
-        fmt.Println("Failed to start node:", err)
-        return
-    }
-    fmt.Println("Node started with ID:", node.ID())
-    fmt.Println("Listening on:")
-    for _, addr := range node.Addrs() {
-        fmt.Printf("  - %s/p2p/%s\n", addr, node.ID())
-    }
+	node, dht, err := startNode(ctx, config)
+	if err != nil {
+		fmt.Println("Failed to start node:", err)
+		return
+	}
+	fmt.Println("Node started with ID:", node.ID())
+	fmt.Println("Listening on:")
+	for _, addr := range node.Addrs() {
+		fmt.Printf("  - %s/p2p/%s\n", addr, node.ID())
+	}
 
-    // Set up a handler for new peer connections
-    node.Network().Notify(&network.NotifyBundle{
-        ConnectedF: func(network network.Network, conn network.Conn) {
-            fmt.Printf("New peer connected: %s\n", conn.RemotePeer())
-        },
-    })
+	// Set up a handler for new peer connections
+	node.Network().Notify(&network.NotifyBundle{
+		ConnectedF: func(network network.Network, conn network.Conn) {
+			fmt.Printf("New peer connected: %s\n", conn.RemotePeer())
+		},
+	})
 
-    // Connect to the bootstrap node and retrieve the initial peer list
-    if err := updatePeerList(ctx, node, config); err != nil {
-        fmt.Println("Failed to update peer list:", err)
-    }
+	// Connect to the bootstrap node and retrieve the initial peer list
+	if err := updatePeerList(ctx, node, config); err != nil {
+		fmt.Println("Failed to update peer list:", err)
+	}
 
-    // Start peer discovery
-    go discoverPeers(ctx, node, dht)
+	// Start peer discovery
+	go discoverPeers(ctx, node, dht)
 
-    // Read user input from the terminal
-    reader := bufio.NewReader(os.Stdin)
-    for {
-        fmt.Print("> ")
-        input, err := reader.ReadString('\n')
-        if err != nil {
-            fmt.Println("Error reading input:", err)
-            continue
-        }
-        input = strings.TrimSpace(input)
+	// Read user input from the terminal
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		fmt.Print("> ")
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			fmt.Println("Error reading input:", err)
+			continue
+		}
+		input = strings.TrimSpace(input)
 
-        if input == "online" {
-            printConnectedPeers(node)
-        } else if input == "exit" {
-            fmt.Println("Exiting...")
-            cancel()
-            return
-        } else {
-            fmt.Println("Unknown command. Available commands:")
-            fmt.Println("  online - Print a list of connected peers")
-            fmt.Println("  exit   - Exit the program")
-        }
-    }
+		if input == "online" {
+			printConnectedPeers(node)
+		} else if input == "exit" {
+			fmt.Println("Exiting...")
+			cancel()
+			return
+		} else {
+			fmt.Println("Unknown command. Available commands:")
+			fmt.Println("  online - Print a list of connected peers")
+			fmt.Println("  exit   - Exit the program")
+		}
+	}
 }
