@@ -102,6 +102,23 @@ func (s *Server) handleConnection(conn net.Conn) {
     }
 }
 
+func getIPAddress() (string, error) {
+    addrs, err := net.InterfaceAddrs()
+    if err != nil {
+        return "", err
+    }
+
+    for _, addr := range addrs {
+        if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+            if ipnet.IP.To4() != nil {
+                return ipnet.IP.String(), nil
+            }
+        }
+    }
+
+    return "", fmt.Errorf("no valid IP address found")
+}
+
 func (s *Server) sendOnlineNodes(conn net.Conn) error {
     s.mu.RLock()
     defer s.mu.RUnlock()
@@ -289,8 +306,15 @@ func main() {
         return
     }
 
+    // Get the IP address of the machine
+    ip, err := getIPAddress()
+    if err != nil {
+        fmt.Println("Error getting IP address:", err)
+        return
+    }
+
     port := 8001
-    addr := fmt.Sprintf("localhost:%d", port)
+    addr := fmt.Sprintf("%s:%d", ip, port)
     for {
         listener, err := net.Listen("tcp", addr)
         if err == nil {
@@ -298,7 +322,7 @@ func main() {
             break
         }
         port++
-        addr = fmt.Sprintf("localhost:%d", port)
+        addr = fmt.Sprintf("%s:%d", ip, port)
     }
 
     server := NewServer(addr)
