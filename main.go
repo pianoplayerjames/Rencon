@@ -1,28 +1,33 @@
 package main
 
 import (
-	"bufio"
-	"context"
-	"encoding/json"
-	"strings"
-	"fmt"
-	"os"
-	"time"
+    "bufio"
+    "context"
+    "encoding/json"
+    "fmt"
+    "os"
+    "strings"
+    "time"
 
-	"github.com/libp2p/go-libp2p"
-	"github.com/libp2p/go-libp2p-kad-dht"
-	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/libp2p/go-libp2p/core/protocol"
-	"github.com/multiformats/go-multiaddr"
+    "github.com/libp2p/go-libp2p"
+    "github.com/libp2p/go-libp2p-kad-dht"
+    "github.com/libp2p/go-libp2p/core/host"
+    "github.com/libp2p/go-libp2p/core/network"
+    "github.com/libp2p/go-libp2p/core/peer"
+    "github.com/libp2p/go-libp2p/core/protocol"
+    "github.com/multiformats/go-multiaddr"
 )
 
 type Config struct {
-	BootstrapPeers []string `json:"bootstrapPeers"`
-	ListenAddress  string   `json:"listenAddress"`
-	ProtocolID     string   `json:"protocolID"`
+    BootstrapPeers []string `json:"bootstrapPeers"`
+    ListenAddress  string   `json:"listenAddress"`
+    ProtocolID     string   `json:"protocolID"`
 }
+
+const (
+    peerListRequestMessage  = "peer_list_request"
+    peerListResponseMessage = "peer_list_response"
+)
 
 func loadConfig(filePath string) (*Config, error) {
     file, err := os.Open(filePath)
@@ -49,58 +54,154 @@ func handleStream(s network.Stream) {
     go readData(rw)
     go writeData(rw)
 
-    // 's' will be closed when this function exits. To keep the stream open, we'll hang the function.
-    select {}
+    // Send peer list to the new node
+    if err := sendPeerList(s, s.Conn().RemotePeer()); err != nil {
+        fmt.Println("Error sending peer list:", err)
+        return
+    }
+
+    // stream 's' will stay open until you close it (or the other side closes it).
 }
 
 func readData(rw *bufio.ReadWriter) {
     for {
-        str, _ := rw.ReadString('\n')
+        str, err := rw.ReadString('\n')
+        if err != nil {
+            fmt.Println("Error reading from buffer:", err)
+            return
+        }
+
         if str == "" {
             return
         }
         if str != "\n" {
-            fmt.Printf("Received: %s", str)
+            // Green console colour:     \x1b[32m
+            // Reset console colour:     \x1b[0m
+            fmt.Printf("\x1b[32m%s\x1b[0m> ", str)
         }
     }
 }
 
 func writeData(rw *bufio.ReadWriter) {
+    stdReader := bufio.NewReader(os.Stdin)
+
     for {
         fmt.Print("> ")
-        sendData, err := bufio.NewReader(os.Stdin).ReadString('\n')
+        sendData, err := stdReader.ReadString('\n')
         if err != nil {
             fmt.Println("Error reading from stdin:", err)
-            continue
+            return
         }
 
-        rw.WriteString(sendData)
-        rw.Flush()
+        _, err = rw.WriteString(sendData)
+        if err != nil {
+            fmt.Println("Error writing to buffer:", err)
+            return
+        }
+        err = rw.Flush()
+        if err != nil {
+            fmt.Println("Error flushing buffer:", err)
+            return
+        }
     }
 }
 
+func sendPeerList(s network.Stream, p peer.ID) error {
+    // Get the list of connected peers
+    peers := s.Conn().RemoteMultiaddr().Bytes()
 
+    // Marshal the list of peers to JSON
+    peerListJSON, err := json.Marshal(peers)
+    if err != nil {
+        return err
+    }
 
-func startNode(config *Config) (host.Host, *dht.IpfsDHT) {
-	// Create a libp2p node with the specified listen address
-	node, err := libp2p.New(libp2p.ListenAddrStrings(config.ListenAddress))
-	if err != nil {
-		panic(err)
-	}
+    // Send the peer list to the stream
+    _, err = s.Write(append([]byte(peerListResponseMessage), peerListJSON...))
+    return err
+}
 
-	// Create a new DHT
-	dht, err := dht.New(context.Background(), node)
-	if err != nil {
-		panic(err)
-	}
+func receivePeerList(s network.Stream) ([]peer.ID, error) {
+    // Read the message from the stream
+    message, err := bufio.NewReader(s).ReadString('\n')
+    if err != nil {
+        return nil, err
+    }
 
-	// Set the stream handler
-	node.SetStreamHandler(protocol.ID(config.ProtocolID), handleStream)
+    // Check if the message is a peer list response
+    if strings.HasPrefix(message, peerListResponseMessage) {
+        // Extract the peer list JSON from the message
+        peerListJSON := strings.TrimPrefix(message, peerListResponseMessage)
 
-	return node, dht
+        // Unmarshal the peer list JSON
+        var peerList []byte
+        if err := json.Unmarshal([]byte(peerListJSON), &peerList); err != nil {
+            return nil, err
+        }
+
+        // Convert the peer list to peer.ID format
+        var peers []peer.ID
+        for _, p := range peerList {
+            id, err := peer.IDFromBytes([]byte{p})
+            if err != nil {
+                continue
+            }
+            peers = append(peers, id)
+        }
+
+        return peers, nil
+    }
+
+    return nil, fmt.Errorf("unexpected message received: %s", message)
+}
+
+func startNode(ctx context.Context, config *Config) (host.Host, *dht.IpfsDHT, error) {
+    fmt.Println("Starting node...")
+
+    // Create a new libp2p host with the given listen address
+    listenAddr, err := multiaddr.NewMultiaddr(config.ListenAddress)
+    if err != nil {
+        return nil, nil, err
+    }
+    host, err := libp2p.New(libp2p.ListenAddrs(listenAddr))
+    if err != nil {
+        return nil, nil, err
+    }
+
+    // Create a new DHT
+    dht, err := dht.New(ctx, host)
+    if err != nil {
+        return nil, nil, err
+    }
+
+    // Set the stream handler on the host
+    host.SetStreamHandler(protocol.ID(config.ProtocolID), handleStream)
+
+    fmt.Println("Node started with ID:", host.ID())
+
+    // Set up periodic peer list updates
+    go func() {
+        ticker := time.NewTicker(5 * time.Minute)
+        defer ticker.Stop()
+
+        for {
+            select {
+            case <-ticker.C:
+                if err := updatePeerList(ctx, host, config); err != nil {
+                    fmt.Println("Error updating peer list:", err)
+                }
+            case <-ctx.Done():
+                return
+            }
+        }
+    }()
+
+    return host, dht, nil
 }
 
 func connectToVPS(ctx context.Context, node host.Host, vpsAddr string) error {
+    fmt.Println("Connecting to VPS:", vpsAddr)
+
     addr, err := multiaddr.NewMultiaddr(vpsAddr)
     if err != nil {
         return err
@@ -115,99 +216,156 @@ func connectToVPS(ctx context.Context, node host.Host, vpsAddr string) error {
         return err
     }
 
-    fmt.Printf("Connected to VPS: %s\n", vpsAddr)
+    fmt.Println("Connected to VPS:", vpsAddr)
+
     return nil
 }
 
+func updatePeerList(ctx context.Context, node host.Host, config *Config) error {
+    // Connect to the bootstrap node
+    for _, vpsAddr := range config.BootstrapPeers {
+        if err := connectToVPS(ctx, node, vpsAddr); err != nil {
+            fmt.Println("Failed to connect to VPS:", err)
+            continue
+        }
+
+        // Send a peer list request to the bootstrap node
+        s, err := node.NewStream(ctx, peer.ID(vpsAddr), protocol.ID(config.ProtocolID))
+        if err != nil {
+            fmt.Println("Error creating stream to bootstrap node:", err)
+            continue
+        }
+
+        if err := sendPeerListRequest(s); err != nil {
+            fmt.Println("Error sending peer list request:", err)
+            s.Close()
+            continue
+        }
+
+        // Receive the peer list response from the bootstrap node
+        peers, err := receivePeerList(s)
+        if err != nil {
+            fmt.Println("Error receiving peer list:", err)
+            s.Close()
+            continue
+        }
+
+        // Update the node's peer list
+        for _, p := range peers {
+            node.Peerstore().AddAddrs(p, node.Peerstore().Addrs(p), time.Hour)
+        }
+
+        s.Close()
+    }
+
+    return nil
+}
+
+func sendPeerListRequest(s network.Stream) error {
+    _, err := s.Write([]byte(peerListRequestMessage + "\n"))
+    return err
+}
+
 func discoverPeers(ctx context.Context, node host.Host, dht *dht.IpfsDHT) {
-	for {
-		// Find closest peers to the node's ID
-		peers, err := dht.GetClosestPeers(ctx, string(node.ID()))
-		if err != nil {
-			fmt.Println("Error discovering peers:", err)
-			return
-		}
+    fmt.Println("Starting peer discovery...")
 
-		for _, p := range peers {
-			if p == node.ID() {
-				continue // Skip self
-			}
-			fmt.Printf("Discovered peer: %s\n", p)
-			node.Connect(ctx, peer.AddrInfo{ID: p})
-		}
+    for {
+        // Find closest peers to the node's ID
+        peers, err := dht.GetClosestPeers(ctx, string(node.ID()))
+        if err != nil {
+            fmt.Println("Error discovering peers:", err)
+            return
+        }
 
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(time.Minute):
-			continue
-		}
-	}
+        fmt.Println("Discovered peers:")
+        for _, p := range peers {
+            if p == node.ID() {
+                continue // Skip self
+            }
+            fmt.Printf("  - %s\n", p)
+
+            // Connect to the discovered peer
+            fmt.Println("Connecting to peer:", p)
+            if err := node.Connect(ctx, peer.AddrInfo{ID: p}); err != nil {
+                fmt.Println("Error connecting to peer:", err)
+                continue
+            }
+            fmt.Println("Connected to peer:", p)
+        }
+
+        select {
+        case <-ctx.Done():
+            return
+        case <-time.After(time.Minute):
+            continue
+        }
+    }
 }
 
 func printConnectedPeers(node host.Host) {
-	fmt.Println("Connected peers:")
-	for _, conn := range node.Network().Conns() {
-		fmt.Printf("  - %s\n", conn.RemotePeer())
-	}
+    fmt.Println("Connected peers:")
+    for _, conn := range node.Network().Conns() {
+        fmt.Printf("  - %s\n", conn.RemotePeer())
+    }
 }
 
 func main() {
-	config, err := loadConfig("config.json")
-	if err != nil {
-		fmt.Println("Failed to load configuration:", err)
-		return
-	}
+    config, err := loadConfig("config.json")
+    if err != nil {
+        fmt.Println("Failed to load configuration:", err)
+        return
+    }
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+    ctx, cancel := context.WithCancel(context.Background())
+    defer cancel()
 
-	node, dht := startNode(config)
-	fmt.Println("Your peer ID:", node.ID())
-	fmt.Println("Listening on:")
-	for _, addr := range node.Addrs() {
-		fmt.Printf("%s/p2p/%s\n", addr, node.ID())
-	}
+    node, dht, err := startNode(ctx, config)
+    if err != nil {
+        fmt.Println("Failed to start node:", err)
+        return
+    }
+    fmt.Println("Node started with ID:", node.ID())
+    fmt.Println("Listening on:")
+    for _, addr := range node.Addrs() {
+        fmt.Printf("  - %s/p2p/%s\n", addr, node.ID())
+    }
 
-	// Set up a handler for new peer connections
-	node.Network().Notify(&network.NotifyBundle{
-		ConnectedF: func(network network.Network, conn network.Conn) {
-			fmt.Printf("New peer connected: %s\n", conn.RemotePeer())
-		},
-	})
+    // Set up a handler for new peer connections
+    node.Network().Notify(&network.NotifyBundle{
+        ConnectedF: func(network network.Network, conn network.Conn) {
+            fmt.Printf("New peer connected: %s\n", conn.RemotePeer())
+        },
+    })
 
-	// Connect to all bootstrap peers
-	for _, vpsAddr := range config.BootstrapPeers {
-		if err := connectToVPS(ctx, node, vpsAddr); err != nil {
-			fmt.Println("Failed to connect to VPS:", err)
-			continue
-		}
-	}
+    // Connect to the bootstrap node and retrieve the initial peer list
+    if err := updatePeerList(ctx, node, config); err != nil {
+        fmt.Println("Failed to update peer list:", err)
+    }
 
-	// Start peer discovery
-	go discoverPeers(ctx, node, dht)
+    // Start peer discovery
+    go discoverPeers(ctx, node, dht)
 
-	// Read user input from the terminal
-	reader := bufio.NewReader(os.Stdin)
-	for {
-		fmt.Print("> ")
-		input, err := reader.ReadString('\n')
-		if err != nil {
-			fmt.Println("Error reading input:", err)
-			continue
-		}
-		input = strings.TrimSpace(input)
+    // Read user input from the terminal
+    reader := bufio.NewReader(os.Stdin)
+    for {
+        fmt.Print("> ")
+        input, err := reader.ReadString('\n')
+        if err != nil {
+            fmt.Println("Error reading input:", err)
+            continue
+        }
+        input = strings.TrimSpace(input)
 
-		if input == "online" {
-			printConnectedPeers(node)
-		} else if input == "exit" {
-			fmt.Println("Exiting...")
-			cancel() // Cancel the context to gracefully shutdown
-			return
-		} else {
-			fmt.Println("Unknown command. Available commands:")
-			fmt.Println("  online - Print a list of connected peers")
-			fmt.Println("  exit   - Exit the program")
-		}
-	}
+        if input == "online" {
+            printConnectedPeers(node)
+        } else if input == "exit" {
+            fmt.Println("Exiting...")
+            cancel()
+            return
+        } else {
+            fmt.Println("Unknown command. Available commands:")
+            fmt.Println("  online - Print a list of connected peers")
+            fmt.Println("  exit   - Exit the program")
+        }
+    }
 }
