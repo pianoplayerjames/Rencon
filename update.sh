@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Define the project directory
-PROJECT_DIR="../"
+# Define the project directory as the current directory
+PROJECT_DIR="."
 
 # Define the GitHub repository URL
 REPO_URL="https://github.com/pianoplayerjames/rencoin.git"
@@ -16,13 +16,14 @@ if [ -d ".git" ]; then
 else
     echo "Project directory is not a git repository. Attempting to clone."
     # Optional: Backup the existing directory if needed
+    # Since we are operating in the current directory, be careful with backups to not overwrite.
     # mv "$PROJECT_DIR" "${PROJECT_DIR}_backup_$(date +%Y%m%d%H%M%S)"
     # Clone the repository afresh
-    git clone "$REPO_URL" "$PROJECT_DIR"
+    git clone "$REPO_URL" .
 fi
 
 # Optional: Commands to handle dependencies or configurations
 # npm install
-# cp "$PROJECT_DIR/configurations/.env.example" "$PROJECT_DIR/configurations/.env"
+# cp ".env.example" ".env"
 
 echo "Update completed."
