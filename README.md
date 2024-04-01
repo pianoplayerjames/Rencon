@@ -1,2 +1,0 @@
-# rencoin
- Decentralised Cryptocurrency Network
